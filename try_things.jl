@@ -1,6 +1,6 @@
 # TO DO LIST:
-    # 1. reduce the problem to 2D plane strain
-    # 2. change the computational problem to 2D compression/shearing
+    # 1. reduce the problem to 2D small strain plane strain - done
+    # 2. change the computational problem to 2D compression/shearing - done
     # 3. change BC so the final deformation is realized in few steps
     # 4. solve it by minimization not by solving set of linear equations
     # 5. extend it do plasticity with 1 than 2 than 6 slip systems
@@ -12,29 +12,61 @@ using TimerOutputs, ProgressMeter, IterativeSolvers
 using ForwardDiff: Chunk, GradientConfig, HessianConfig
 using SparseArrays
 
+function extend_mx!(mx)
+    mx = hcat(mx, [0.0; 0.0])
+    mx = vcat(mx, [0.0 0.0 0.0])
+    return mx
+end;
+
+function tens2vect(t::Matrix)
+    return [t[1, 1], t[2, 2], t[3, 3], sqrt(2)*t[1, 2], sqrt(2)*t[1, 3], sqrt(2)*t[2, 3]]
+end;
+
+function vect2tens(v::Vector)
+    return [
+        v[1]  1 / sqrt(2) * v[4]  1 / sqrt(2) * v[5]
+        1 / sqrt(2) * v[4] v[2] 1 / sqrt(2) * v[6]
+        1 / sqrt(2) * v[5] 1 / sqrt(2) * v[6] v[3]
+            ]
+end;
+
 # parameters
-struct NeoHooke
-    μ::Float64
-    λ::Float64
+# struct NeoHooke
+#     μ::Float64
+#     λ::Float64
+# end
+
+struct HookeConst
+    c11::Float64
+    c12::Float64
+    c44::Float64
 end
 
-function ψe(C, mp::NeoHooke)
+function CubicMatrix(c11, c12, c44)
+    return    [ c11 c12 c12 0 0 0
+                c12 c11 c12 0 0 0
+                c12 c12 c11 0 0 0
+                0 0 0 2c44 0 0
+                0 0 0 0 2c44 0
+                0 0 0 0 0 2c44 ]
+end;
+
+function ψe(ϵ, mp::HookeConst)
     # parameters
-    μ   = mp.μ
-    λ   = mp.λ
-    # functions    
-    Ic  = tr(C)
-    J   = sqrt(det(C))
-    return μ / 2 * (Ic -3) - μ * log(J) + λ / 2 * log(J)^2
+    c11 = mp.c11
+    c12 = mp.c12
+    c44 = mp.c44
+    Dᵉ  = CubicMatrix(c11, c12, c44)
+    ϵ   = extend_mx!(ϵ)
+    ϵv  = tens2vect(ϵ)
+    return 0.5(ϵv' * Dᵉ) * ϵv
 end
 
-function element_potential(ue::AbstractVector{T}, cv, mp::NeoHooke) where T
+function element_potential(ue::AbstractVector{T}, cv, mp::HookeConst) where T
     energy = zero(T)
     for qp=1:getnquadpoints(cv)
-        ∇u      = function_gradient(cv, qp, ue)
-        F       = one(∇u) + ∇u
-        C       = tdot(F) # F' ⋅ F
-        energy  += ψe(C, mp)
+        ∇u      = function_symmetric_gradient(cv, qp, ue)
+        energy  += ψe(∇u, mp)
     end
     return energy
 end
@@ -103,44 +135,33 @@ function solve()
     reset_timer!()
 
     # Generate a grid
-    N = 30
+    N = 50
     L = 1.0
-    left = zero(Vec{3})
-    right = L * ones(Vec{3})
-    grid = generate_grid(Tetrahedron, (N, N, N), left, right)
+    left = zero(Vec{2})
+    right = L * ones(Vec{2})
+    grid = generate_grid(Quadrilateral, (N, N), left, right)
 
     # Material parameters
-    E = 10.0
-    ν = 0.3
-    μ = E / (2(1 + ν))
-    λ = (E * ν) / ((1 + ν) * (1 - 2ν))
-    mp = NeoHooke(μ, λ)
+    c11 = 170.
+    c12 = 124.
+    c44 = 75.
+    mp = HookeConst(c11, c12, c44)
 
     # Finite element base
-    ip = Lagrange{3, RefTetrahedron, 1}()
-    qr = QuadratureRule{3, RefTetrahedron}(1)
-    cv = CellVectorValues(qr, ip)
+    ip = Lagrange{2, RefCube, 1}()
+    qr = QuadratureRule{2, RefCube}(2)
+    cv = CellVectorValues(qr, ip, ip)
 
     # DofHandler
     dh = DofHandler(grid)
-    add!(dh, :u, 3) # Add a displacement field
+    add!(dh, :u, 2) # Add a displacement field
     close!(dh)
-
-    function rotation(X, t)
-        θ = pi / 3 # 60°
-        x, y, z = X
-        return t * Vec{3}((
-            0.0,
-            L/2 - y + (y-L/2)*cos(θ) - (z-L/2)*sin(θ),
-            L/2 - z + (y-L/2)*sin(θ) + (z-L/2)*cos(θ)
-        ))
-    end
 
     dbcs = ConstraintHandler(dh)
     # Add a homogeneous boundary condition on the "clamped" edge
-    dbc = Dirichlet(:u, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0, 0.0], [1, 2, 3])
+    dbc = Dirichlet(:u, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
     add!(dbcs, dbc)
-    dbc = Dirichlet(:u, getfaceset(grid, "left"), (x,t) -> rotation(x, t), [1, 2, 3])
+    dbc = Dirichlet(:u, getfaceset(grid, "left"), (x,t) -> t*[1], [1])  #???
     add!(dbcs, dbc)
     close!(dbcs)
     t = 0.05
@@ -166,8 +187,9 @@ function solve()
     threadindices = [i for i in 1:length(grid.cells)]
     model = Model(u, dh, dbcs, threadindices, caches) 
     
+
     newton_itr = -1
-    NEWTON_TOL = 1e-10
+    NEWTON_TOL = 1e-9
     NEWTON_MAXITER = 30
     prog = ProgressMeter.ProgressThresh(NEWTON_TOL, "Solving:")
 
@@ -191,7 +213,7 @@ function solve()
         end
 
         # Compute increment using conjugate gradients
-        @timeit "linear solve" IterativeSolvers.cg!(ΔΔu, K, g; maxiter=1000)
+        @timeit "linear solve" ΔΔu .= K \ g #;IterativeSolvers.cg!(ΔΔu, K, g; maxiter=1000)
 
         apply_zero!(ΔΔu, dbcs)
         Δu .-= ΔΔu
