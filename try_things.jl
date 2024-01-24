@@ -51,13 +51,13 @@ function CubicMatrix(c11, c12, c44)
                 0 0 0 0 0 2c44 ]
 end;
 
-function ψe(ϵ, mp::HookeConst)
+function ψe(ϵ, mp::HookeConst) where T
     # parameters
     c11 = mp.c11
     c12 = mp.c12
     c44 = mp.c44
     Dᵉ  = CubicMatrix(c11, c12, c44)
-    ϵ   = extend_mx!(ϵ)
+    ϵ   = extend_mx!(ϵ) # this is quite dirty code
     ϵv  = tens2vect(ϵ)
     return 0.5(ϵv' * Dᵉ) * ϵv
 end
@@ -135,7 +135,7 @@ function solve()
     reset_timer!()
 
     # Generate a grid
-    N = 50
+    N = 10
     L = 1.0
     left = zero(Vec{2})
     right = L * ones(Vec{2})
@@ -148,32 +148,31 @@ function solve()
     mp = HookeConst(c11, c12, c44)
 
     # Finite element base
-    ip = Lagrange{2, RefCube, 1}()
-    qr = QuadratureRule{2, RefCube}(2)
-    cv = CellVectorValues(qr, ip, ip)
+    #linear    = Lagrange{2,RefTetrahedron,1}()
+    #quadratic = Lagrange{2,RefTetrahedron,2}()
+    ip = Lagrange{2, RefCube, 1}() # field interpolation
+    gip = Lagrange{2, RefCube, 1}() # geometric interpolation
+    qr = QuadratureRule{2, RefCube}(2) # Gauss points
+    cv = CellVectorValues(qr, ip, gip)
 
     # DofHandler
     dh = DofHandler(grid)
-    add!(dh, :u, 2) # Add a displacement field
+    add!(dh, :u, 2, ip) # Add a displacement field
     close!(dh)
 
     dbcs = ConstraintHandler(dh)
     # Add a homogeneous boundary condition on the "clamped" edge
     dbc = Dirichlet(:u, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
     add!(dbcs, dbc)
-    dbc = Dirichlet(:u, getfaceset(grid, "left"), (x,t) -> t*[1], [1])  #???
+    dbc = Dirichlet(:u, getfaceset(grid, "left"), (x,t) -> t*[1], [1])
     add!(dbcs, dbc)
     close!(dbcs)
-    t = 0.05
-    Ferrite.update!(dbcs, t)
 
     # Pre-allocation of vectors for the solution and Newton increments
     _ndofs = ndofs(dh)
-    un = zeros(_ndofs) # previous solution vector
+    #un = zeros(_ndofs) # previous solution vector
     u  = zeros(_ndofs)
     Δu = zeros(_ndofs)
-    ΔΔu = zeros(_ndofs)
-    apply!(un, dbcs)
 
     # Create sparse matrix and residual vector
     K = create_sparsity_pattern(dh)
@@ -183,46 +182,56 @@ function solve()
     dpc = ndofs_per_cell(dh)
     cpc = length(grid.cells[1].nodes)
     caches = ThreadCache(dpc, cpc, copy(cv), mp, element_potential)
-    
+      
     threadindices = [i for i in 1:length(grid.cells)]
     model = Model(u, dh, dbcs, threadindices, caches) 
-    
-
-    newton_itr = -1
-    NEWTON_TOL = 1e-9
+       
+    NEWTON_TOL = 1e-10
     NEWTON_MAXITER = 30
-    prog = ProgressMeter.ProgressThresh(NEWTON_TOL, "Solving:")
-
-    while true; newton_itr += 1
-        println("Newton iteration = ", newton_itr)
-        # Construct the current guess
-        u .= un .+ Δu
+    #prog = ProgressMeter.ProgressThresh(NEWTON_TOL, "Solving:")
+    Tf = 0.5
+    Δt = 0.025
+    #t = 0.5
+    counter = 0;
+    pvd = paraview_collection("small_strain_elasticity_2D.pvd");
+    for t ∈ 0.0:Δt:Tf
+        #Perform Newton iterations
+        Ferrite.update!(model.boundaryconds, t)
+        apply!(u, model.boundaryconds)
         model.dofs .= u
-        # Compute residual and tangent for current guess
-        assemble_global!(K, g, model)
-        # Apply boundary conditions
-        apply_zero!(K, g, dbcs)
-        # Compute the residual norm and compare with tolerance
-        normg = norm(g)
-        println("normg = ", normg)
-        ProgressMeter.update!(prog, normg; showvalues = [(:iter, newton_itr)])
-        if normg < NEWTON_TOL
-            break
-        elseif newton_itr > NEWTON_MAXITER
-            error("Reached maximum Newton iterations, aborting")
+        newton_itr = -1
+        prog = ProgressMeter.ProgressThresh(NEWTON_TOL, "Solving @ time $t of $Tf;")
+        fill!(Δu, 0.0)
+        counter += 1
+        while true; newton_itr += 1
+            println("Newton iteration = ", newton_itr)
+            # compute tangent and residuals
+            assemble_global!(K, g, model)
+            # Apply boundary conditions
+            apply_zero!(K, g, dbcs)
+            # Compute the residual norm and compare with tolerance
+            normg = norm(g)
+            println("for t = ", t, "  normg = ", normg)
+            ProgressMeter.update!(prog, normg; showvalues = [(:iter, newton_itr)])
+            if normg < NEWTON_TOL
+                break
+            elseif newton_itr > NEWTON_MAXITER
+                error("Reached maximum Newton iterations, aborting")
+            end
+
+            # Compute increment using conjugate gradients
+            @timeit "linear solve" IterativeSolvers.cg!(Δu, K, g; maxiter=1000)
+
+            apply_zero!(Δu, model.boundaryconds)
+            u .-= Δu
+            fill!(Δu, 0.0)
+            model.dofs .= u
         end
-
-        # Compute increment using conjugate gradients
-        @timeit "linear solve" ΔΔu .= K \ g #;IterativeSolvers.cg!(ΔΔu, K, g; maxiter=1000)
-
-        apply_zero!(ΔΔu, dbcs)
-        Δu .-= ΔΔu
-    end
-
-    # Save the solution
-    @timeit "export" begin
-        vtk_grid("hyperelasticity_my", dh) do vtkfile
-            vtk_point_data(vtkfile, dh, u)
+        # Save the solution fields
+        vtk_grid("small_strain_elasticity_2D_$counter.vtu", dh) do vtkfile
+            vtk_point_data(vtkfile, dh, model.dofs)
+            vtk_save(vtkfile)
+            pvd[t] = vtkfile
         end
     end
 
