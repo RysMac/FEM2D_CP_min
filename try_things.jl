@@ -12,6 +12,7 @@ using TimerOutputs, ProgressMeter, IterativeSolvers
 using ForwardDiff: Chunk, GradientConfig, HessianConfig
 using SparseArrays
 using Optim, LineSearches
+using NLSolversBase
 
 function extend_mx!(mx)
     mx = hcat(mx, [0.0; 0.0])
@@ -57,8 +58,8 @@ function ψe(ϵ, p, mp::HookeConst) where T
     ϵ   = extend_mx!(ϵ) # this is quite dirty code
     ϵv  = tens2vect(ϵ)
     # simple fake energy having p = function_values(cvp, qp, pe)
-    return 0.5(ϵv' * Dᵉ) * ϵv + gab * p^2
-end
+    return 0.5(ϵv' * Dᵉ) * ϵv + 0.5 * gab * p^2
+end;
 
 function element_potential(dofe::AbstractVector{T}, cvu, cvp, mp::HookeConst) where T
     energy = zero(T)
@@ -74,7 +75,7 @@ function element_potential(dofe::AbstractVector{T}, cvu, cvp, mp::HookeConst) wh
         energy  += ψe(∇u, p, mp) * getdetJdV(cvu, qp)
     end
     return energy
-end
+end;
 
 # Create struct which poseses all element data e.g. ke, re, potential etc...
 struct ThreadCache{CVu, CVp, T, DIM, F <: Function, GC <: GradientConfig, HC <: HessianConfig}
@@ -96,7 +97,7 @@ function ThreadCache(dpc::Int, nodespercell, cvPu::CellValues{DIM, T}, cvPp::Cel
     element_gradient    = zeros(dpc)
     element_hessian     = zeros(dpc, dpc)
     element_coords      = zeros(Vec{DIM, T}, nodespercell)
-    potfunc             = x -> elpotential(x, cvP, modelparams)
+    potfunc             = x -> elpotential(x, cvPu, cvPp, modelparams)
     gradconf            = GradientConfig(potfunc, zeros(dpc), Chunk{3}())
     hessconf            = HessianConfig(potfunc, zeros(dpc), Chunk{3}())
     return ThreadCache(cvPu, cvPp, element_indices, element_dofs, element_gradient, element_hessian, element_coords, potfunc, gradconf, hessconf)
@@ -109,6 +110,7 @@ mutable struct Model{T, DH <: DofHandler, CH <: ConstraintHandler, TC <: ThreadC
     boundaryconds ::CH
     threadindices ::Vector{Int} # cells iterator now it is 1:ncells
     threadcaches  ::TC  # cache with all element information
+    constr_lower  ::Vector{T}
 end
 
 function hessian_global!(K::SparseMatrixCSC, dofvector::Vector{T}, model::Model{T}) where T
@@ -124,7 +126,8 @@ function hessian_global!(K::SparseMatrixCSC, dofvector::Vector{T}, model::Model{
         for j=1:length(cache.element_coords)
             cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x
         end
-        reinit!(cache.cvP, cache.element_coords)    
+        reinit!(cache.cvPu, cache.element_coords)    
+        reinit!(cache.cvPp, cache.element_coords)  
         celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs
         #
         for j=1:length(cache.element_dofs)
@@ -150,7 +153,8 @@ function gradient_global!(r::Vector{T}, dofvector::Vector{T}, model::Model{T}) w
         for j=1:length(cache.element_coords)
             cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x
         end
-        reinit!(cache.cvP, cache.element_coords)    
+        reinit!(cache.cvPu, cache.element_coords)    
+        reinit!(cache.cvPp, cache.element_coords) 
         celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs
         #
         for j=1:length(cache.element_dofs)
@@ -171,13 +175,14 @@ function energy_global(dofvector::Vector{T}, model::Model{T}) where T
     total_energy = 0.0
     # loop over all cells
     @timeit "assemble energy" for cell_i in model.threadindices
-        nodeids = dh.grid.cells[cell_i].nodes
+        nodeids = dh.grid.cells[cell_i].nodes # indexy nodow / numeracja nodow 
         #
-        for j=1:length(cache.element_coords)
-            cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x
+        for j=1:length(cache.element_coords) 
+            cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x # zapisanie w tablicy coordinates of nodes w celu identyfikacji elementu 
         end
-        reinit!(cache.cvP, cache.element_coords)    
-        celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs
+        reinit!(cache.cvPu, cache.element_coords) 
+        reinit!(cache.cvPp, cache.element_coords) # bedzie chyba klopot przy uzyciu innych elementow dla dwoch pol      
+        celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs i.e. dofvector array
         #
         for j=1:length(cache.element_dofs)
             eldofs[j] = dofvector[cache.element_indices[j]]
@@ -190,9 +195,10 @@ function energy_global(dofvector::Vector{T}, model::Model{T}) where T
     return total_energy
 end;
 
-#function ElasticModel()
+
+function ElasticModel()
     # Generate a grid
-    N       = 1
+    N       = 10
     L       = 1.0
     left    = zero(Vec{2})
     right   = L * ones(Vec{2})
@@ -217,48 +223,18 @@ end;
 
     # DofHandler
     dh = DofHandler(grid)
-    add!(dh, :u, 2, ipu) # Add a displacement field
-    add!(dh, :p, 3, ipp)
+    add!(dh, :u, 2, ipu) # add displacement field
+    add!(dh, :p, 1, ipp) # add plastic field
     close!(dh)
+    
+    
+    _ndofs  = ndofs(dh)
+    lc      = zeros(_ndofs)
+    for i in 1:length(grid.cells)
+        lc[celldofs(dh, i)[1:8]] .= -Inf
+    end
 
-    dpc     = ndofs_per_cell(dh)
-    cpc     = length(grid.cells[1].nodes)
-    
-    zeros(Vec{2, Float64}, cpc)
-
-    nodeids = dh.grid.cells[1].nodes
-    coords = [dh.grid.nodes[nodeids[i]].x for i in 1:4]
-
-    reinit!(cvu, coords)
-    reinit!(cvp, coords)
-    
-    cell_dofs_indeces = celldofs(dh, 1)
-    
-    cell_dofs_indeces_u = cell_dofs_indeces[1:8]
-    cell_dofs_indeces_p = cell_dofs_indeces[9:end]
-    
-    ue = zeros(length(cell_dofs_indeces_u))
-    pe = zeros(length(cell_dofs_indeces_p))
-    
-    pe = [1,2,3,4,5,6,7,8,9,10,11,12]
-    pe_r = reshape(pe, (3, :))
-    
-    v4 = permutedims(pe_r)
-    v4[1]
-    
-    typeof(v4)
-
-    pe = [ [0.0] for i=1:4]
-    
-    typeof(pe')
-    
-    
-    function_symmetric_gradient(cvu, 1, ue)
-    
-    function_value(cvu, 1, pe)
-    
-    function_value(cvp, 1, pe)
-    
+    #pe_r = @view (pe, (3, :)) 
     dbcs = ConstraintHandler(dh)
     # Add a homogeneous boundary condition on the "clamped" edge
     dbc = Dirichlet(:u, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
@@ -273,8 +249,8 @@ end;
     caches  = ThreadCache(dpc, cpc, copy(cvu), copy(cvp), mp, element_potential)
       
     threadindices = [i for i in 1:length(grid.cells)]
-    return Model(zeros(ndofs(dh)), dh, dbcs, threadindices, caches)
-#end 
+    return Model(zeros(ndofs(dh)), dh, dbcs, threadindices, caches, lc)
+end; 
 
 function solve()
     reset_timer!()
@@ -286,7 +262,7 @@ function solve()
     # Create model
     model   = ElasticModel()
     _ndofs  = length(model.dofs)
-    u       = zeros(_ndofs)
+    u       = zeros(_ndofs) .+ 1e-2
     Δu      = zeros(_ndofs)
     # Create sparse matrix and residual vector
     K = create_sparsity_pattern(model.dofhandler)
@@ -306,13 +282,16 @@ function solve()
     f(x) = energy_global(x, model)
     
     od = TwiceDifferentiable(f, grad!, hess!, model.dofs, 0.0, g, K)
-    lx = Float64[]; ux = Float64[]
+
+    lx = model.constr_lower #[-Inf for _ in 1:_ndofs]
+    ux = [Inf for _ in 1:_ndofs]
+    #ux = [Inf for _ in 1:length(lx)]
     odc = TwiceDifferentiableConstraints(lx, ux)
-    res(x) = optimize(od, x, Newton(), Optim.Options(show_trace=false, show_every=1, g_tol=1e-20))
+    res(x) = optimize(od, odc, x, IPNewton(), Optim.Options(show_trace=true, show_every=1, g_tol=1e-16))
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
-    for t ∈ 0.0:Δt:Tf
+    #for t ∈ 0.0:Δt:Δt
         #Perform Newton iterations
-        t = Tf
+        t = 0.1
         Ferrite.update!(model.boundaryconds, t)
         apply!(u, model.boundaryconds)
         model.dofs .= u
@@ -358,7 +337,7 @@ function solve()
             vtk_save(vtkfile)
             pvd[t] = vtkfile
         end
-    end
+    #end
 
     print_timer(title = "Analysis with $(getncells(model.dofhandler.grid)) elements", linechars = :ascii)
     return u
@@ -366,7 +345,7 @@ end
 
 u_my = solve();
 
-
+u_my
 # steps which can be done on this :
     # 1. Compute tangent matrix differentiating wrt global dofs - done
     # 2. Add scratch struct - done 
@@ -374,5 +353,3 @@ u_my = solve();
     # 3. Make it parallel
     # 4. Generate C code for tangent stiffness !!! this should help much !!!
     # 5. Go to plasticity...
-
-    21*8
