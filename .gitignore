@@ -1,0 +1,15 @@
+# Julia-related files and directories
+.julia/*
+.julia_packages/*
+Project.toml
+Manifest.toml
+
+# Git-related files and directories
+.git/*
+!.gitignore
+
+# vscode
+.vscode/*
+
+# paraview
+*.vtu

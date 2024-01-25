@@ -339,7 +339,7 @@ u_my = solve();
 # steps which can be done on this :
     # 1. Compute tangent matrix differentiating wrt global dofs - done
     # 2. Add scratch struct - done 
-    # 3. Solve it by minimization
+    # 3. Solve it by minimization - done
     # 3. Make it parallel
     # 4. Generate C code for tangent stiffness 
     # 5. Go to plasticity...
