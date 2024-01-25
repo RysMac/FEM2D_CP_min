@@ -35,6 +35,7 @@ struct HookeConst
     c11::Float64
     c12::Float64
     c44::Float64
+    gab::Float64
 end
 
 function CubicMatrix(c11, c12, c44)
@@ -46,29 +47,39 @@ function CubicMatrix(c11, c12, c44)
                 0 0 0 0 0 2c44 ]
 end;
 
-function ψe(ϵ, mp::HookeConst) where T
+function ψe(ϵ, p, mp::HookeConst) where T
     # parameters
     c11 = mp.c11
     c12 = mp.c12
     c44 = mp.c44
+    gab = mp.gab
     Dᵉ  = CubicMatrix(c11, c12, c44)
     ϵ   = extend_mx!(ϵ) # this is quite dirty code
     ϵv  = tens2vect(ϵ)
-    return 0.5(ϵv' * Dᵉ) * ϵv
+    # simple fake energy having p = function_values(cvp, qp, pe)
+    return 0.5(ϵv' * Dᵉ) * ϵv + gab * p^2
 end
 
-function element_potential(ue::AbstractVector{T}, cv, mp::HookeConst) where T
+function element_potential(dofe::AbstractVector{T}, cvu, cvp, mp::HookeConst) where T
     energy = zero(T)
-    for qp=1:getnquadpoints(cv)
-        ∇u      = function_symmetric_gradient(cv, qp, ue)
-        energy  += ψe(∇u, mp) * getdetJdV(cv, qp)
+    # muszą wchodzic dwa elementy cvu cvp dla u i pl
+    nu = getnbasefunctions(cvu)
+    np = getnbasefunctions(cvp)
+    ue = dofe[1:nu]
+    pe = dofe[nu + 1:end] 
+    for qp=1:getnquadpoints(cvu)
+        # tutaj trzeba rozdzielić ue i ple 
+        ∇u      = function_symmetric_gradient(cvu, qp, ue)
+        p       = function_value(cvp, qp, pe)
+        energy  += ψe(∇u, p, mp) * getdetJdV(cvu, qp)
     end
     return energy
 end
 
 # Create struct which poseses all element data e.g. ke, re, potential etc...
-struct ThreadCache{CV, T, DIM, F <: Function, GC <: GradientConfig, HC <: HessianConfig}
-    cvP                 ::CV
+struct ThreadCache{CVu, CVp, T, DIM, F <: Function, GC <: GradientConfig, HC <: HessianConfig}
+    cvPu                ::CVu
+    cvPp                ::CVp
     element_indices     ::Vector{Int}
     element_dofs        ::Vector{T}
     element_gradient    ::Vector{T}
@@ -79,7 +90,7 @@ struct ThreadCache{CV, T, DIM, F <: Function, GC <: GradientConfig, HC <: Hessia
     hessconf            ::HC
 end
 
-function ThreadCache(dpc::Int, nodespercell, cvP::CellValues{DIM, T}, modelparams, elpotential) where {DIM, T}
+function ThreadCache(dpc::Int, nodespercell, cvPu::CellValues{DIM, T}, cvPp::CellValues{DIM, T}, modelparams, elpotential) where {DIM, T}
     element_indices     = zeros(Int, dpc)
     element_dofs        = zeros(dpc)
     element_gradient    = zeros(dpc)
@@ -88,7 +99,7 @@ function ThreadCache(dpc::Int, nodespercell, cvP::CellValues{DIM, T}, modelparam
     potfunc             = x -> elpotential(x, cvP, modelparams)
     gradconf            = GradientConfig(potfunc, zeros(dpc), Chunk{3}())
     hessconf            = HessianConfig(potfunc, zeros(dpc), Chunk{3}())
-    return ThreadCache(cvP, element_indices, element_dofs, element_gradient, element_hessian, element_coords, potfunc, gradconf, hessconf)
+    return ThreadCache(cvPu, cvPp, element_indices, element_dofs, element_gradient, element_hessian, element_coords, potfunc, gradconf, hessconf)
 end
 
 
@@ -96,37 +107,9 @@ mutable struct Model{T, DH <: DofHandler, CH <: ConstraintHandler, TC <: ThreadC
     dofs          ::Vector{T}
     dofhandler    ::DH
     boundaryconds ::CH
-    threadindices ::Vector{Int} # cells iterator
+    threadindices ::Vector{Int} # cells iterator now it is 1:ncells
     threadcaches  ::TC  # cache with all element information
 end
-
-# function assemble_global!(dofvector::Vector{T}, K::SparseMatrixCSC, r::Vector{T}, model::Model{T}) where T
-#     dh = model.dofhandler
-#     # start_assemble resets K and r
-#     assembler = start_assemble(K, r)
-#     cache = model.threadcaches # only one cache - space for all element data like Ke, re etc...
-#     eldofs = cache.element_dofs
-#     total_energy = 0.0
-#     # loop over all cells
-#     @timeit "assemble" for cell_i in model.threadindices
-#         nodeids = dh.grid.cells[cell_i].nodes
-#         #
-#         for j=1:length(cache.element_coords)
-#             cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x
-#         end
-#         reinit!(cache.cvP, cache.element_coords)    
-#         celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs
-#         #
-#         for j=1:length(cache.element_dofs)
-#             eldofs[j] = dofvector[cache.element_indices[j]]
-#         end  
-#         total_energy += cache.element_potential(eldofs)
-#         @timeit "gradient" ForwardDiff.gradient!(cache.element_gradient, cache.element_potential, eldofs, cache.gradconf)
-#         @timeit "hessian" ForwardDiff.hessian!(cache.element_hessian, cache.element_potential, eldofs, cache.hessconf)
-#         assemble!(assembler, cache.element_indices, cache.element_gradient, cache.element_hessian)
-#     end
-#     return total_energy
-# end;
 
 function hessian_global!(K::SparseMatrixCSC, dofvector::Vector{T}, model::Model{T}) where T
     dh = model.dofhandler
@@ -135,7 +118,7 @@ function hessian_global!(K::SparseMatrixCSC, dofvector::Vector{T}, model::Model{
     cache = model.threadcaches # only one cache - space for all element data like Ke, re etc...
     eldofs = cache.element_dofs
     # loop over all cells
-    @timeit "assemble" for cell_i in model.threadindices
+    @timeit "assemble hessian" for cell_i in model.threadindices
         nodeids = dh.grid.cells[cell_i].nodes
         #
         for j=1:length(cache.element_coords)
@@ -161,7 +144,7 @@ function gradient_global!(r::Vector{T}, dofvector::Vector{T}, model::Model{T}) w
     cache = model.threadcaches # only one cache - space for all element data like Ke, re etc...
     eldofs = cache.element_dofs
     # loop over all cells
-    @timeit "assemble" for cell_i in model.threadindices
+    @timeit "assemble gradient" for cell_i in model.threadindices
         nodeids = dh.grid.cells[cell_i].nodes
         #
         for j=1:length(cache.element_coords)
@@ -173,7 +156,7 @@ function gradient_global!(r::Vector{T}, dofvector::Vector{T}, model::Model{T}) w
         for j=1:length(cache.element_dofs)
             eldofs[j] = dofvector[cache.element_indices[j]]
         end  
-        @timeit "gradient" ForwardDiff.gradient!(cache.element_gradient, cache.element_potential, eldofs, cache.gradconf)
+        ForwardDiff.gradient!(cache.element_gradient, cache.element_potential, eldofs, cache.gradconf)
         #@timeit "hessian" ForwardDiff.hessian!(cache.element_hessian, cache.element_potential, eldofs, cache.hessconf)
         assemble!(r, cache.element_indices, cache.element_gradient)
     end
@@ -187,7 +170,7 @@ function energy_global(dofvector::Vector{T}, model::Model{T}) where T
     eldofs = cache.element_dofs
     total_energy = 0.0
     # loop over all cells
-    @timeit "assemble" for cell_i in model.threadindices
+    @timeit "assemble energy" for cell_i in model.threadindices
         nodeids = dh.grid.cells[cell_i].nodes
         #
         for j=1:length(cache.element_coords)
@@ -207,9 +190,9 @@ function energy_global(dofvector::Vector{T}, model::Model{T}) where T
     return total_energy
 end;
 
-function ElasticModel()
+#function ElasticModel()
     # Generate a grid
-    N       = 40
+    N       = 1
     L       = 1.0
     left    = zero(Vec{2})
     right   = L * ones(Vec{2})
@@ -219,21 +202,63 @@ function ElasticModel()
     c11 = 170.
     c12 = 124.
     c44 = 75.
-    mp  = HookeConst(c11, c12, c44)
+    gab = 1000.
+    mp  = HookeConst(c11, c12, c44, gab)
 
     # Finite element base
     #linear    = Lagrange{2,RefTetrahedron,1}()
     #quadratic = Lagrange{2,RefTetrahedron,2}()
-    ip  = Lagrange{2, RefCube, 1}() # field interpolation
+    ipu = Lagrange{2, RefCube, 1}() # field interpolation fo u
+    ipp = Lagrange{2, RefCube, 1}() # field interpolation fo p 
     gip = Lagrange{2, RefCube, 1}() # geometric interpolation
     qr  = QuadratureRule{2, RefCube}(2) # Gauss points
-    cv  = CellVectorValues(qr, ip, gip)
+    cvu = CellVectorValues(qr, ipu, gip)
+    cvp = CellScalarValues(qr, ipp, gip)
 
     # DofHandler
     dh = DofHandler(grid)
-    add!(dh, :u, 2, ip) # Add a displacement field
+    add!(dh, :u, 2, ipu) # Add a displacement field
+    add!(dh, :p, 3, ipp)
     close!(dh)
 
+    dpc     = ndofs_per_cell(dh)
+    cpc     = length(grid.cells[1].nodes)
+    
+    zeros(Vec{2, Float64}, cpc)
+
+    nodeids = dh.grid.cells[1].nodes
+    coords = [dh.grid.nodes[nodeids[i]].x for i in 1:4]
+
+    reinit!(cvu, coords)
+    reinit!(cvp, coords)
+    
+    cell_dofs_indeces = celldofs(dh, 1)
+    
+    cell_dofs_indeces_u = cell_dofs_indeces[1:8]
+    cell_dofs_indeces_p = cell_dofs_indeces[9:end]
+    
+    ue = zeros(length(cell_dofs_indeces_u))
+    pe = zeros(length(cell_dofs_indeces_p))
+    
+    pe = [1,2,3,4,5,6,7,8,9,10,11,12]
+    pe_r = reshape(pe, (3, :))
+    
+    v4 = permutedims(pe_r)
+    v4[1]
+    
+    typeof(v4)
+
+    pe = [ [0.0] for i=1:4]
+    
+    typeof(pe')
+    
+    
+    function_symmetric_gradient(cvu, 1, ue)
+    
+    function_value(cvu, 1, pe)
+    
+    function_value(cvp, 1, pe)
+    
     dbcs = ConstraintHandler(dh)
     # Add a homogeneous boundary condition on the "clamped" edge
     dbc = Dirichlet(:u, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
@@ -245,11 +270,11 @@ function ElasticModel()
     # Make one cache 
     dpc     = ndofs_per_cell(dh)
     cpc     = length(grid.cells[1].nodes)
-    caches  = ThreadCache(dpc, cpc, copy(cv), mp, element_potential)
+    caches  = ThreadCache(dpc, cpc, copy(cvu), copy(cvp), mp, element_potential)
       
     threadindices = [i for i in 1:length(grid.cells)]
     return Model(zeros(ndofs(dh)), dh, dbcs, threadindices, caches)
-end 
+#end 
 
 function solve()
     reset_timer!()
@@ -281,9 +306,13 @@ function solve()
     f(x) = energy_global(x, model)
     
     od = TwiceDifferentiable(f, grad!, hess!, model.dofs, 0.0, g, K)
+    lx = Float64[]; ux = Float64[]
+    odc = TwiceDifferentiableConstraints(lx, ux)
+    res(x) = optimize(od, x, Newton(), Optim.Options(show_trace=false, show_every=1, g_tol=1e-20))
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
-    for t ∈ Δt:Δt:Tf
+    for t ∈ 0.0:Δt:Tf
         #Perform Newton iterations
+        t = Tf
         Ferrite.update!(model.boundaryconds, t)
         apply!(u, model.boundaryconds)
         model.dofs .= u
@@ -291,8 +320,10 @@ function solve()
         prog = ProgressMeter.ProgressThresh(NEWTON_TOL, "Solving @ time $t of $Tf;")
         fill!(Δu, 0.0)
         counter += 1
-        @timeit "minimization time" res = optimize(od, model.dofs, Newton(linesearch=BackTracking()), Optim.Options(show_trace=false, show_every=1, g_tol=1e-20))
-        model.dofs .= res.minimizer
+        @timeit "minimization time" min = res(model.dofs) 
+        #@timeit "minimization time" min = optimize(od, model.dofs, Newton(), Optim.Options(show_trace=false, show_every=1, g_tol=1e-20))
+        println(min)
+        model.dofs .= min.minimizer
         # while true; newton_itr += 1
         #     println("Newton iteration = ", newton_itr)
         #     # compute tangent, residuals and energy
@@ -341,5 +372,7 @@ u_my = solve();
     # 2. Add scratch struct - done 
     # 3. Solve it by minimization - done
     # 3. Make it parallel
-    # 4. Generate C code for tangent stiffness 
+    # 4. Generate C code for tangent stiffness !!! this should help much !!!
     # 5. Go to plasticity...
+
+    21*8
