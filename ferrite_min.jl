@@ -6,12 +6,10 @@ using SparseArrays
 using Tensors
 using Base.Threads
 
-Vec{3}((1,2,3))
-
 function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
     #ϵ   = extend_mx!(∇P) # this is quite dirty code
     #ϵv  = tens2vect(ϵ)
-    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], ∇P[1, 2]))
+    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
     return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
 end
 
@@ -223,20 +221,14 @@ vtk_save("landaufinal", model)
 
 Threads.nthreads()
 
-Tensor{2,3}(G) ⋅ [1,2,3]
-
 A = rand(SymmetricTensor{2, 2})
-
-G = Tensor{2,3}(G)
 
 Fg(A, G)
 
 function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
     #ϵ   = extend_mx!(∇P) # this is quite dirty code
     #ϵv  = tens2vect(ϵ)
-    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], ∇P[1, 2]))
+    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
     return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
     #return 0.5(∇P ⊡ ∇P)
 end
-
-Tensor{1, 3}((1,2,3))
