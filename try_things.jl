@@ -48,7 +48,7 @@ function CubicMatrix(c11, c12, c44)
                 0 0 0 0 0 2c44 ]
 end;
 
-function ψe(ϵ, p, mp::HookeConst) where T
+function ψe(ϵ, p, mp::HookeConst)
     # parameters
     c11 = mp.c11
     c12 = mp.c12
@@ -208,7 +208,7 @@ end;
 
 function ElasticModel()
     # Generate a grid
-    N       = 10
+    N       = 4
     L       = 1.0
     left    = zero(Vec{2})
     right   = L * ones(Vec{2})
@@ -369,3 +369,5 @@ u_my
     # 3. Make it parallel
     # 4. Generate C code for tangent stiffness !!! this should help much !!!
     # 5. Go to plasticity...
+
+    280/60
