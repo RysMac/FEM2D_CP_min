@@ -13,6 +13,13 @@ function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
     return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
 end
 
+function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
+    #ϵ   = extend_mx!(∇P) # this is quite dirty code
+    #ϵv  = tens2vect(ϵ)
+    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
+    return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
+end
+
 F(∇P, params) = Fg(∇P, params.G)
 
 struct ModelParams{V, T}
@@ -53,6 +60,7 @@ end
 
 function LandauModel(α, G, gridsize, left::Vec{DIM, T}, right::Vec{DIM, T}, elpotential) where {DIM, T}
     grid = generate_grid(Quadrilateral, gridsize, left, right)
+    grid = generate_grid(Quadrilateral, gridsize, left, right)
     threadindices = Ferrite.create_coloring(grid)
 
     qr  = QuadratureRule{DIM, RefCube}(2)
@@ -60,12 +68,18 @@ function LandauModel(α, G, gridsize, left::Vec{DIM, T}, right::Vec{DIM, T}, elp
 
     dofhandler = DofHandler(grid)
     add!(dofhandler, :P, 2)
+    add!(dofhandler, :P, 2)
     close!(dofhandler)
 
     dofvector = zeros(ndofs(dofhandler))
     #startingconditions!(dofvector, dofhandler)
+    #startingconditions!(dofvector, dofhandler)
     boundaryconds = ConstraintHandler(dofhandler)
     #boundary conditions can be added but aren't necessary for optimization
+    dbc = Dirichlet(:P, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
+    add!(boundaryconds, dbc)
+    dbc = Dirichlet(:P, getfaceset(grid, "left"), (x,t) -> [0.5], [1])
+    add!(boundaryconds, dbc)
     dbc = Dirichlet(:P, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
     add!(boundaryconds, dbc)
     dbc = Dirichlet(:P, getfaceset(grid, "left"), (x,t) -> [0.5], [1])
@@ -163,6 +177,7 @@ function minimize!(model; kwargs...)
     function h!(storage, x)
         ∇²F!(storage, x, model)
         apply!(storage, model.boundaryconds)
+        apply!(storage, model.boundaryconds)
     end
     f(x) = F(x, model)
 
@@ -184,6 +199,8 @@ function element_potential(eldofs::AbstractVector{T}, cvP, params) where T
     for qp=1:getnquadpoints(cvP)
         #P  = function_value(cvP, qp, eldofs)
         ∇P = function_symmetric_gradient(cvP, qp, eldofs)
+        #P  = function_value(cvP, qp, eldofs)
+        ∇P = function_symmetric_gradient(cvP, qp, eldofs)
         energy += F(∇P, params) * getdetJdV(cvP, qp)
     end
     return energy
@@ -196,6 +213,7 @@ function startingconditions!(dofvector, dofhandler)
         for i=1:3:length(globaldofs)
             dofvector[globaldofs[i]]   = -2.0
             dofvector[globaldofs[i+1]] = 2.0
+            #dofvector[globaldofs[i+2]] = -2.0tanh(cell.coords[it][1]/20)
             #dofvector[globaldofs[i+2]] = -2.0tanh(cell.coords[it][1]/20)
             it += 1
         end
@@ -210,7 +228,16 @@ c44 = 75.
 G = Tensor{2,3}([ c11 c12 0
                 c12 c11 0
                 0 0 2c44 ]);
+c11 = 170.
+c12 = 124.
+c44 = 75.
+G = Tensor{2,3}([ c11 c12 0
+                c12 c11 0
+                0 0 2c44 ]);
 α = Vec{3}((-1.0, 1.0, 1.0))
+left = Vec{2}((0.,-0.))
+right = Vec{2}((1.,1.))
+model = LandauModel(α, G, (50, 50), left, right, element_potential);
 left = Vec{2}((0.,-0.))
 right = Vec{2}((1.,1.))
 model = LandauModel(α, G, (50, 50), left, right, element_potential);
