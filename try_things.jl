@@ -3,7 +3,7 @@
     # 2. change the computational problem to 2D compression/shearing - done
     # 3. change BC so the final deformation is realized in few steps - done
     # 4. solve it by minimization not by solving set of linear equations - done
-    # 5. extend it do plasticity with 1 than 2 than 6 slip systems - 1 slip system done 
+    # 5. extend it do plasticity with 1 than 2 than 6 slip systems - 1 slip system done
     # 6. try to do periodic boundary condition
 
 using Ferrite, Tensors
@@ -12,51 +12,28 @@ using TimerOutputs, ProgressMeter, IterativeSolvers
 using ForwardDiff: Chunk, GradientConfig, HessianConfig
 using SparseArrays
 using Optim, LineSearches
-using NLSolversBase
-
-function extend_mx!(mx)
-    mx = hcat(mx, [0.0; 0.0])
-    mx = vcat(mx, [0.0 0.0 0.0])
-    return mx
-end;
-
-function tens2vect(t::Matrix)
-    return [t[1, 1], t[2, 2], t[3, 3], sqrt(2)*t[1, 2], sqrt(2)*t[1, 3], sqrt(2)*t[2, 3]]
-end;
-
-function vect2tens(v::Vector)
-    return [
-        v[1]  1 / sqrt(2) * v[4]  1 / sqrt(2) * v[5]
-        1 / sqrt(2) * v[4] v[2] 1 / sqrt(2) * v[6]
-        1 / sqrt(2) * v[5] 1 / sqrt(2) * v[6] v[3]
-            ]
-end;
 
 struct HookeConst
     c11::Float64
     c12::Float64
     c44::Float64
-    gab::Float64
+gab::Float64
 end
 
 function CubicMatrix(c11, c12, c44)
-    return    [ c11 c12 c12 0 0 0
-                c12 c11 c12 0 0 0
-                c12 c12 c11 0 0 0
-                0 0 0 2c44 0 0
-                0 0 0 0 2c44 0
-                0 0 0 0 0 2c44 ]
+    return    [ c11 c12  0
+                c12 c11  0
+                0 0 2c44 ]
 end;
 
-function ψe(ϵ, p, mp::HookeConst)
+# tutaj trzeba wszystko pozamieniać na Tensor lub Vector bo ϵ wchodzi jako SymmetricTensor więc musimy pracować na tych samych typach
+function ψe(ϵ::SymmetricTensor{2, 2, T}, p, mp::HookeConst) where T
     # parameters
     c11 = mp.c11
     c12 = mp.c12
     c44 = mp.c44
     gab = mp.gab
     Dᵉ  = CubicMatrix(c11, c12, c44)
-    ϵ   = extend_mx!(ϵ) # this is quite dirty code
-    ϵv  = tens2vect(ϵ)
     #
     R1 = 1/sqrt(2)
     R = [R1 -R1 0
@@ -120,7 +97,7 @@ mutable struct Model{T, DH <: DofHandler, CH <: ConstraintHandler, TC <: ThreadC
     boundaryconds ::CH
     threadindices ::Vector{Int} # cells iterator now it is 1:ncells
     threadcaches  ::TC  # cache with all element information
-    constr_lower  ::Vector{T}
+constr_lower  ::Vector{T}
 end
 
 function hessian_global!(K::SparseMatrixCSC, dofvector::Vector{T}, model::Model{T}) where T
@@ -137,7 +114,7 @@ function hessian_global!(K::SparseMatrixCSC, dofvector::Vector{T}, model::Model{
             cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x
         end
         reinit!(cache.cvPu, cache.element_coords)    
-        reinit!(cache.cvPp, cache.element_coords)  
+        reinit!(cache.cvPp, cache.element_coords)    
         celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs
         #
         for j=1:length(cache.element_dofs)
@@ -164,7 +141,7 @@ function gradient_global!(r::Vector{T}, dofvector::Vector{T}, model::Model{T}) w
             cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x
         end
         reinit!(cache.cvPu, cache.element_coords)    
-        reinit!(cache.cvPp, cache.element_coords) 
+        reinit!(cache.cvPp, cache.element_coords)    
         celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs
         #
         for j=1:length(cache.element_dofs)
@@ -185,10 +162,10 @@ function energy_global(dofvector::Vector{T}, model::Model{T}) where T
     total_energy = 0.0
     # loop over all cells
     @timeit "assemble energy" for cell_i in model.threadindices
-        nodeids = dh.grid.cells[cell_i].nodes # indexy nodow / numeracja nodow 
+        nodeids = dh.grid.cells[cell_i].nodes # indexy nodow / numeracja nodow
         #
-        for j=1:length(cache.element_coords) 
-            cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x # zapisanie w tablicy coordinates of nodes w celu identyfikacji elementu 
+        for j=1:length(cache.element_coords)
+            cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x # zapisanie w tablicy coordinates of nodes w celu identyfikacji elementu
         end
         reinit!(cache.cvPu, cache.element_coords) 
         reinit!(cache.cvPp, cache.element_coords) # bedzie chyba klopot przy uzyciu innych elementow dla dwoch pol      
@@ -225,7 +202,7 @@ function ElasticModel()
     #linear    = Lagrange{2,RefTetrahedron,1}()
     #quadratic = Lagrange{2,RefTetrahedron,2}()
     ipu = Lagrange{2, RefCube, 2}() # field interpolation fo u
-    ipp = Lagrange{2, RefCube, 1}() # field interpolation fo p 
+    ipp = Lagrange{2, RefCube, 1}() # field interpolation fo p
     gip = Lagrange{2, RefCube, 1}() # geometric interpolation
     qr  = QuadratureRule{2, RefCube}(3) # Gauss points
     cvu = CellVectorValues(qr, ipu, gip)
@@ -234,10 +211,10 @@ function ElasticModel()
     # DofHandler
     dh = DofHandler(grid)
     add!(dh, :u, 2, ipu) # add displacement field
-    add!(dh, :p, 1, ipp) # add plastic field
+add!(dh, :p, 1, ipp) # add plastic field
     close!(dh)
-    
-    ue_range = dof_range(dh, :u)
+
+ue_range = dof_range(dh, :u)
     pe_range = dof_range(dh, :p)
 
     _ndofs  = ndofs(dh)
@@ -275,7 +252,7 @@ function solve()
     model   = ElasticModel()
     _ndofs  = length(model.dofs)
     u       = zeros(_ndofs)
-    for i in 1:length(model.dofhandler.grid.cells)
+for i in 1:length(model.dofhandler.grid.cells)
         u[celldofs(model.dofhandler, i)[9:end]] .= 0.1
     end
     #u       = zeros(_ndofs)
@@ -306,7 +283,7 @@ function solve()
     res(x) = optimize(od, odc, x, IPNewton(), Optim.Options(show_trace=false, show_every=1, g_tol=1e-16, iterations=50))
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
     for t ∈ 0.0:Δt:Tf
-        #Perform Newton iterations
+                #Perform Newton iterations
         #t = 0.1
         Ferrite.update!(model.boundaryconds, t)
         apply!(u, model.boundaryconds)
@@ -367,7 +344,5 @@ u_my
     # 2. Add scratch struct - done 
     # 3. Solve it by minimization - done
     # 3. Make it parallel
-    # 4. Generate C code for tangent stiffness !!! this should help much !!!
+    # 4. Generate C code for tangent stiffness !!! this should help much !!! 
     # 5. Go to plasticity...
-
-    280/60
