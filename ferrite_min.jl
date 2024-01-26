@@ -6,8 +6,15 @@ using SparseArrays
 using Tensors
 using Base.Threads
 
+Vec{3}((1,2,3))
 
-@inline Fg(∇P, G) = 0.5(∇P ⊡ G) ⊡ ∇P
+function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
+    #ϵ   = extend_mx!(∇P) # this is quite dirty code
+    #ϵv  = tens2vect(ϵ)
+    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], ∇P[1, 2]))
+    return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
+end
+
 F(∇P, params) = Fg(∇P, params.G)
 
 struct ModelParams{V, T}
@@ -47,22 +54,24 @@ mutable struct LandauModel{T, DH <: DofHandler, CH <: ConstraintHandler, TC <: T
 end
 
 function LandauModel(α, G, gridsize, left::Vec{DIM, T}, right::Vec{DIM, T}, elpotential) where {DIM, T}
-    grid = generate_grid(Hexahedron, gridsize, left, right)
+    grid = generate_grid(Quadrilateral, gridsize, left, right)
     threadindices = Ferrite.create_coloring(grid)
 
     qr  = QuadratureRule{DIM, RefCube}(2)
     cvP = CellVectorValues(qr, Lagrange{DIM, RefCube, 1}())
 
     dofhandler = DofHandler(grid)
-    add!(dofhandler, :P, 3)
+    add!(dofhandler, :P, 2)
     close!(dofhandler)
 
     dofvector = zeros(ndofs(dofhandler))
-    startingconditions!(dofvector, dofhandler)
+    #startingconditions!(dofvector, dofhandler)
     boundaryconds = ConstraintHandler(dofhandler)
     #boundary conditions can be added but aren't necessary for optimization
-    #add!(boundaryconds, Dirichlet(:P, getfaceset(grid, "left"), (x, t) -> [0.0,0.0,0.53], [1,2,3]))
-    #add!(boundaryconds, Dirichlet(:P, getfaceset(grid, "right"), (x, t) -> [0.0,0.0,-0.53], [1,2,3]))
+    dbc = Dirichlet(:P, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
+    add!(boundaryconds, dbc)
+    dbc = Dirichlet(:P, getfaceset(grid, "left"), (x,t) -> [0.5], [1])
+    add!(boundaryconds, dbc)
     close!(boundaryconds)
     update!(boundaryconds, 0.0)
 
@@ -155,7 +164,7 @@ function minimize!(model; kwargs...)
     end
     function h!(storage, x)
         ∇²F!(storage, x, model)
-        #apply!(storage, model.boundaryconds)
+        apply!(storage, model.boundaryconds)
     end
     f(x) = F(x, model)
 
@@ -175,8 +184,8 @@ end
 function element_potential(eldofs::AbstractVector{T}, cvP, params) where T
     energy = zero(T)
     for qp=1:getnquadpoints(cvP)
-        P  = function_value(cvP, qp, eldofs)
-        ∇P = function_gradient(cvP, qp, eldofs)
+        #P  = function_value(cvP, qp, eldofs)
+        ∇P = function_symmetric_gradient(cvP, qp, eldofs)
         energy += F(∇P, params) * getdetJdV(cvP, qp)
     end
     return energy
@@ -189,7 +198,7 @@ function startingconditions!(dofvector, dofhandler)
         for i=1:3:length(globaldofs)
             dofvector[globaldofs[i]]   = -2.0
             dofvector[globaldofs[i+1]] = 2.0
-            dofvector[globaldofs[i+2]] = -2.0tanh(cell.coords[it][1]/20)
+            #dofvector[globaldofs[i+2]] = -2.0tanh(cell.coords[it][1]/20)
             it += 1
         end
     end
@@ -197,15 +206,37 @@ end
 
 δ(i, j) = i == j ? one(i) : zero(i)
 V2T(p11, p12, p44) = Tensor{4, 3}((i,j,k,l) -> p11 * δ(i,j)*δ(k,l)*δ(i,k) + p12*δ(i,j)*δ(k,l)*(1 - δ(i,k)) + p44*δ(i,k)*δ(j,l)*(1 - δ(i,j)))
-
-G = V2T(1.0e2, 0.0, 1.0e2)
+c11 = 170.
+c12 = 124.
+c44 = 75.
+G = Tensor{2,3}([ c11 c12 0
+                c12 c11 0
+                0 0 2c44 ]);
 α = Vec{3}((-1.0, 1.0, 1.0))
-left = Vec{3}((-75.,-25.,-2.))
-right = Vec{3}((75.,25.,2.))
-model = LandauModel(α, G, (50, 50, 2), left, right, element_potential);
+left = Vec{2}((0.,-0.))
+right = Vec{2}((1.,1.))
+model = LandauModel(α, G, (50, 50), left, right, element_potential);
 
 vtk_save("landauorig", model)
 @time minimize!(model)
 vtk_save("landaufinal", model)
 
 Threads.nthreads()
+
+Tensor{2,3}(G) ⋅ [1,2,3]
+
+A = rand(SymmetricTensor{2, 2})
+
+G = Tensor{2,3}(G)
+
+Fg(A, G)
+
+function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
+    #ϵ   = extend_mx!(∇P) # this is quite dirty code
+    #ϵv  = tens2vect(ϵ)
+    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], ∇P[1, 2]))
+    return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
+    #return 0.5(∇P ⊡ ∇P)
+end
+
+Tensor{1, 3}((1,2,3))
