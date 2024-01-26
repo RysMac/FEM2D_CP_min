@@ -209,7 +209,7 @@ end;
 
 function ElasticModel()
     # Generate a grid
-    N       = 40
+    N       = 50
     L       = 1.0
     left    = zero(Vec{2})
     right   = L * ones(Vec{2})
@@ -282,7 +282,8 @@ function solve()
     
     od = TwiceDifferentiable(f, grad!, hess!, model.dofs, 0.0, g, K)
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
-    for t ∈ Δt:Δt:Tf
+    #for t ∈ Δt:Δt:Tf
+        t = 0.1
         #Perform Newton iterations
         Ferrite.update!(model.boundaryconds, t)
         apply!(u, model.boundaryconds)
@@ -327,13 +328,13 @@ function solve()
             vtk_save(vtkfile)
             pvd[t] = vtkfile
         end
-    end
+    #end
 
     print_timer(title = "Analysis with $(getncells(model.dofhandler.grid)) elements", linechars = :ascii)
     return u
 end
 
-u_my = solve();
+@time u_my = solve();
 
 
 # steps which can be done on this :
