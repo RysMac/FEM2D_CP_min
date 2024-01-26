@@ -3,7 +3,7 @@
     # 2. change the computational problem to 2D compression/shearing - done
     # 3. change BC so the final deformation is realized in few steps - done
     # 4. solve it by minimization not by solving set of linear equations - done
-    # 5. extend it do plasticity with 1 than 2 than 6 slip systems
+    # 5. extend it do plasticity with 1 than 2 than 6 slip systems - 1 slip system done 
     # 6. try to do periodic boundary condition
 
 using Ferrite, Tensors
@@ -57,8 +57,18 @@ function ψe(ϵ, p, mp::HookeConst) where T
     Dᵉ  = CubicMatrix(c11, c12, c44)
     ϵ   = extend_mx!(ϵ) # this is quite dirty code
     ϵv  = tens2vect(ϵ)
-    # simple fake energy having p = function_values(cvp, qp, pe)
-    return 0.5(ϵv' * Dᵉ) * ϵv + 0.5 * gab * p^2
+    #
+    R1 = 1/sqrt(2)
+    R = [R1 -R1 0
+         0 0 -1
+         R1 R1 0]
+    m = R*[1., -1., 1.]/sqrt(3.)
+    s = R*[1., -1., -2.]/sqrt(6)
+    P = 0.5 * ((m * s')' + (m * s'))
+    P = tens2vect(P)
+    # the energy is wrong 
+    return 0.5(ϵv' * Dᵉ) * ϵv - (Dᵉ * ϵv)' * P * p +((P' * Dᵉ) * P + gab)*p^2
+    #return 0.5(ϵv' * Dᵉ) * ϵv + 0.5 * gab * p^2
 end;
 
 function element_potential(dofe::AbstractVector{T}, cvu, cvp, mp::HookeConst) where T
@@ -208,16 +218,16 @@ function ElasticModel()
     c11 = 170.
     c12 = 124.
     c44 = 75.
-    gab = 1000.
+    gab = 0.8
     mp  = HookeConst(c11, c12, c44, gab)
 
     # Finite element base
     #linear    = Lagrange{2,RefTetrahedron,1}()
     #quadratic = Lagrange{2,RefTetrahedron,2}()
-    ipu = Lagrange{2, RefCube, 1}() # field interpolation fo u
+    ipu = Lagrange{2, RefCube, 2}() # field interpolation fo u
     ipp = Lagrange{2, RefCube, 1}() # field interpolation fo p 
     gip = Lagrange{2, RefCube, 1}() # geometric interpolation
-    qr  = QuadratureRule{2, RefCube}(2) # Gauss points
+    qr  = QuadratureRule{2, RefCube}(3) # Gauss points
     cvu = CellVectorValues(qr, ipu, gip)
     cvp = CellScalarValues(qr, ipp, gip)
 
@@ -227,19 +237,21 @@ function ElasticModel()
     add!(dh, :p, 1, ipp) # add plastic field
     close!(dh)
     
-    
+    ue_range = dof_range(dh, :u)
+    pe_range = dof_range(dh, :p)
+
     _ndofs  = ndofs(dh)
     lc      = zeros(_ndofs)
     for i in 1:length(grid.cells)
-        lc[celldofs(dh, i)[1:8]] .= -Inf
+        lc[celldofs(dh, i)[ue_range]] .= -Inf
     end
 
     #pe_r = @view (pe, (3, :)) 
     dbcs = ConstraintHandler(dh)
     # Add a homogeneous boundary condition on the "clamped" edge
-    dbc = Dirichlet(:u, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
+    dbc = Dirichlet(:u, getfaceset(grid, "bottom"), (x,t) -> [0.0, 0.0], [1, 2])
     add!(dbcs, dbc)
-    dbc = Dirichlet(:u, getfaceset(grid, "left"), (x,t) -> t*[1], [1])
+    dbc = Dirichlet(:u, getfaceset(grid, "top"), (x,t) -> -t*[0, 1], [1, 2])
     add!(dbcs, dbc)
     close!(dbcs)
 
@@ -262,7 +274,11 @@ function solve()
     # Create model
     model   = ElasticModel()
     _ndofs  = length(model.dofs)
-    u       = zeros(_ndofs) .+ 1e-2
+    u       = zeros(_ndofs)
+    for i in 1:length(model.dofhandler.grid.cells)
+        u[celldofs(model.dofhandler, i)[9:end]] .= 0.1
+    end
+    #u       = zeros(_ndofs)
     Δu      = zeros(_ndofs)
     # Create sparse matrix and residual vector
     K = create_sparsity_pattern(model.dofhandler)
@@ -287,11 +303,11 @@ function solve()
     ux = [Inf for _ in 1:_ndofs]
     #ux = [Inf for _ in 1:length(lx)]
     odc = TwiceDifferentiableConstraints(lx, ux)
-    res(x) = optimize(od, odc, x, IPNewton(), Optim.Options(show_trace=true, show_every=1, g_tol=1e-16))
+    res(x) = optimize(od, odc, x, IPNewton(), Optim.Options(show_trace=false, show_every=1, g_tol=1e-16, iterations=50))
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
-    #for t ∈ 0.0:Δt:Δt
+    for t ∈ 0.0:Δt:Tf
         #Perform Newton iterations
-        t = 0.1
+        #t = 0.1
         Ferrite.update!(model.boundaryconds, t)
         apply!(u, model.boundaryconds)
         model.dofs .= u
@@ -337,7 +353,7 @@ function solve()
             vtk_save(vtkfile)
             pvd[t] = vtkfile
         end
-    #end
+    end
 
     print_timer(title = "Analysis with $(getncells(model.dofhandler.grid)) elements", linechars = :ascii)
     return u
