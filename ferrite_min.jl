@@ -9,7 +9,7 @@ using Base.Threads
 function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
     #ϵ   = extend_mx!(∇P) # this is quite dirty code
     #ϵv  = tens2vect(ϵ)
-    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
+    ∇P_vec = @views Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
     return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
 end
 
