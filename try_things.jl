@@ -52,15 +52,15 @@ end
 
 function ψe(ϵ, Dᵉ)
     #
-    ϵv  = Vec{}(ϵ[1, 1], ϵ[2, 2], 0.0, sqrt(2)*ϵ[1, 2], 0.0, 0.0)
+    ϵv  = vec([ϵ[1, 1], ϵ[2, 2], 0.0, sqrt(2)/2*(ϵ[1, 2] + ϵ[2, 1]), 0.0, 0.0])
     return 0.5 * (ϵv ⋅ [Dᵉ[i] ⋅ ϵv for i in 1:6])
 end
 
-function element_potential(ue::AbstractVector{T}, cv, mp::HookeConst) where T
+function element_potential(ue::AbstractVector{T}, cv, Dᵉ) where T
     energy = zero(T)
     for qp=1:getnquadpoints(cv)
         ∇u      = function_gradient(cv, qp, ue)
-        energy  += ψe(∇u, mp) * getdetJdV(cv, qp)
+        energy  += ψe(∇u, Dᵉ) * getdetJdV(cv, qp)
     end
     return energy
 end
@@ -219,6 +219,7 @@ function ElasticModel()
     c12 = 124.
     c44 = 75.
     mp  = HookeConst(c11, c12, c44)
+    Dᵉ  = CubicMatrix(mp)
     # @code_warntype CubicMatrix(c11, c12, c44)
 
     # using BenchmarkTools
@@ -279,7 +280,7 @@ function ElasticModel()
     # Make one cache 
     dpc     = ndofs_per_cell(dh)
     cpc     = length(grid.cells[1].nodes)
-    caches  = ThreadCache(dpc, cpc, copy(cv), mp, element_potential)
+    caches  = ThreadCache(dpc, cpc, copy(cv), Dᵉ, element_potential)
       
     threadindices = [i for i in 1:length(grid.cells)]
     return Model(zeros(ndofs(dh)), dh, dbcs, threadindices, caches)
@@ -371,6 +372,8 @@ end
 @time u_my = solve();
 
 maximum(u_my)
+
+length(u_my)
 # steps which can be done on this :
     # 1. Compute tangent matrix differentiating wrt global dofs - done
     # 2. Add scratch struct - done 
@@ -379,6 +382,8 @@ maximum(u_my)
     # 4. Generate C code for tangent stiffness 
     # 5. Go to plasticity...
 
+    
+    
     c11 = 170.
     c12 = 124.
     c44 = 75.

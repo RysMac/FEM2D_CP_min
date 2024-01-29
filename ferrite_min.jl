@@ -6,12 +6,6 @@ using SparseArrays
 using Tensors
 using Base.Threads
 
-function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
-    #ϵ   = extend_mx!(∇P) # this is quite dirty code
-    #ϵv  = tens2vect(ϵ)
-    ∇P_vec = @views Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
-    return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
-end
 
 function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
     #ϵ   = extend_mx!(∇P) # this is quite dirty code
@@ -60,14 +54,12 @@ end
 
 function LandauModel(α, G, gridsize, left::Vec{DIM, T}, right::Vec{DIM, T}, elpotential) where {DIM, T}
     grid = generate_grid(Quadrilateral, gridsize, left, right)
-    grid = generate_grid(Quadrilateral, gridsize, left, right)
     threadindices = Ferrite.create_coloring(grid)
 
     qr  = QuadratureRule{DIM, RefCube}(2)
     cvP = CellVectorValues(qr, Lagrange{DIM, RefCube, 1}())
 
     dofhandler = DofHandler(grid)
-    add!(dofhandler, :P, 2)
     add!(dofhandler, :P, 2)
     close!(dofhandler)
 
@@ -80,16 +72,12 @@ function LandauModel(α, G, gridsize, left::Vec{DIM, T}, right::Vec{DIM, T}, elp
     add!(boundaryconds, dbc)
     dbc = Dirichlet(:P, getfaceset(grid, "left"), (x,t) -> [0.5], [1])
     add!(boundaryconds, dbc)
-    dbc = Dirichlet(:P, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
-    add!(boundaryconds, dbc)
-    dbc = Dirichlet(:P, getfaceset(grid, "left"), (x,t) -> [0.5], [1])
-    add!(boundaryconds, dbc)
     close!(boundaryconds)
     update!(boundaryconds, 0.0)
 
     apply!(dofvector, boundaryconds)
 
-    hessian = create_sparsity_pattern(dofhandler)
+    #hessian = create_sparsity_pattern(dofhandler)
     dpc = ndofs_per_cell(dofhandler)
     cpc = length(grid.cells[1].nodes)
     caches = [ThreadCache(dpc, cpc, copy(cvP), ModelParams(α, G), elpotential) for t=1:nthreads()]
@@ -177,7 +165,6 @@ function minimize!(model; kwargs...)
     function h!(storage, x)
         ∇²F!(storage, x, model)
         apply!(storage, model.boundaryconds)
-        apply!(storage, model.boundaryconds)
     end
     f(x) = F(x, model)
 
@@ -197,8 +184,6 @@ end
 function element_potential(eldofs::AbstractVector{T}, cvP, params) where T
     energy = zero(T)
     for qp=1:getnquadpoints(cvP)
-        #P  = function_value(cvP, qp, eldofs)
-        ∇P = function_symmetric_gradient(cvP, qp, eldofs)
         #P  = function_value(cvP, qp, eldofs)
         ∇P = function_symmetric_gradient(cvP, qp, eldofs)
         energy += F(∇P, params) * getdetJdV(cvP, qp)
@@ -225,19 +210,10 @@ V2T(p11, p12, p44) = Tensor{4, 3}((i,j,k,l) -> p11 * δ(i,j)*δ(k,l)*δ(i,k) + p
 c11 = 170.
 c12 = 124.
 c44 = 75.
-G = Tensor{2,3}([ c11 c12 0
-                c12 c11 0
-                0 0 2c44 ]);
-c11 = 170.
-c12 = 124.
-c44 = 75.
-G = Tensor{2,3}([ c11 c12 0
-                c12 c11 0
-                0 0 2c44 ]);
+G = Tensor{2,3}([ c11 c12 0.
+                c12 c11 0.
+                0. 0. 2c44 ]);
 α = Vec{3}((-1.0, 1.0, 1.0))
-left = Vec{2}((0.,-0.))
-right = Vec{2}((1.,1.))
-model = LandauModel(α, G, (50, 50), left, right, element_potential);
 left = Vec{2}((0.,-0.))
 right = Vec{2}((1.,1.))
 model = LandauModel(α, G, (50, 50), left, right, element_potential);
