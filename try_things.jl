@@ -99,34 +99,6 @@ mutable struct Model{T, DH <: DofHandler, CH <: ConstraintHandler, TC <: ThreadC
     threadcaches  ::TC  # cache with all element information
 end
 
-# function assemble_global!(dofvector::Vector{T}, K::SparseMatrixCSC, r::Vector{T}, model::Model{T}) where T
-#     dh = model.dofhandler
-#     # start_assemble resets K and r
-#     assembler = start_assemble(K, r)
-#     cache = model.threadcaches # only one cache - space for all element data like Ke, re etc...
-#     eldofs = cache.element_dofs
-#     total_energy = 0.0
-#     # loop over all cells
-#     @timeit "assemble" for cell_i in model.threadindices
-#         nodeids = dh.grid.cells[cell_i].nodes
-#         #
-#         for j=1:length(cache.element_coords)
-#             cache.element_coords[j] = dh.grid.nodes[nodeids[j]].x
-#         end
-#         reinit!(cache.cvP, cache.element_coords)    
-#         celldofs!(cache.element_indices, dh, cell_i) # Store the degrees of freedom that belong to cell i in global_dofs
-#         #
-#         for j=1:length(cache.element_dofs)
-#             eldofs[j] = dofvector[cache.element_indices[j]]
-#         end  
-#         total_energy += cache.element_potential(eldofs)
-#         @timeit "gradient" ForwardDiff.gradient!(cache.element_gradient, cache.element_potential, eldofs, cache.gradconf)
-#         @timeit "hessian" ForwardDiff.hessian!(cache.element_hessian, cache.element_potential, eldofs, cache.hessconf)
-#         assemble!(assembler, cache.element_indices, cache.element_gradient, cache.element_hessian)
-#     end
-#     return total_energy
-# end;
-
 function hessian_global!(K::SparseMatrixCSC, dofvector::Vector{T}, model::Model{T}) where T
     dh = model.dofhandler
     # start_assemble resets K and r
@@ -208,7 +180,7 @@ end;
 
 function ElasticModel()
     # Generate a grid
-    N       = 50
+    N       = 2
     L       = 1.0
     left    = zero(Vec{2})
     right   = L * ones(Vec{2})
@@ -297,6 +269,7 @@ function solve()
     model   = ElasticModel()
     _ndofs  = length(model.dofs)
     u       = zeros(_ndofs)
+    un      = zeros(_ndofs)
     Δu      = zeros(_ndofs)
     # Create sparse matrix and residual vector
     K = create_sparsity_pattern(model.dofhandler)
@@ -316,64 +289,74 @@ function solve()
     f(x) = energy_global(x, model)
     
     od = TwiceDifferentiable(f, grad!, hess!, model.dofs, 0.0, g, K)
+    find_min(x) = optimize(od, x, Newton(linesearch=BackTracking()), Optim.Options(show_trace=true, show_every=1, g_tol=1e-10))
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
-    #for t ∈ Δt:Δt:Tf
-        t = 0.1
+    for t ∈ Δt:Δt:Tf
+    #    t = 0.2
         #Perform Newton iterations
         Ferrite.update!(model.boundaryconds, t)
-        apply!(u, model.boundaryconds)
-        model.dofs .= u
+        apply!(u, model.boundaryconds);
+        model.dofs .= u - un
+        #println(u)     
         newton_itr = -1
         prog = ProgressMeter.ProgressThresh(NEWTON_TOL, "Solving @ time $t of $Tf;")
-        fill!(Δu, 0.0)
+        #fill!(Δu, 0.0)
         counter += 1
-        #@timeit "minimization time" res = optimize(od, model.dofs, Newton(linesearch=BackTracking()), Optim.Options(show_trace=true, show_every=1, g_tol=1e-20))
-        #model.dofs .= res.minimizer
-        while true; newton_itr += 1
-            println("Newton iteration = ", newton_itr)
-            # compute tangent, residuals and energy
-            grad!(g, model.dofs)
-            hess!(K, model.dofs)
-            total_energy = f(model.dofs)
-            println("total energy = ", total_energy)
-            # Apply boundary conditions
-            # apply_zero!(K, g, model.boundaryconds)
-            # Compute the residual norm and compare with tolerance
-            normg = norm(g)
-            println("for t = ", t, "  normg = ", normg)
-            ProgressMeter.update!(prog, normg; showvalues = [(:iter, newton_itr)])
-            if normg < NEWTON_TOL
-                break
-            elseif newton_itr > NEWTON_MAXITER
-                error("Reached maximum Newton iterations, aborting")
-            end
+        @timeit "minimization time" Δres = find_min(model.dofs)
+        model.dofs .= Δres.minimizer
+        println(model.dofs)
+        un .+= model.dofs
+        u .= un
+        #
+        # while true; newton_itr += 1
+        #     println("Newton iteration = ", newton_itr)
+        #     # compute tangent, residuals and energy
+        #     grad!(g, model.dofs)
+        #     hess!(K, model.dofs)
+        #     total_energy = f(model.dofs)
+        #     println("total energy = ", total_energy)
+        #     # Apply boundary conditions
+        #     # apply_zero!(K, g, model.boundaryconds)
+        #     # Compute the residual norm and compare with tolerance
+        #     normg = norm(g)
+        #     println("for t = ", t, "  normg = ", normg)
+        #     ProgressMeter.update!(prog, normg; showvalues = [(:iter, newton_itr)])
+        #     if normg < NEWTON_TOL
+        #         break
+        #     elseif newton_itr > NEWTON_MAXITER
+        #         error("Reached maximum Newton iterations, aborting")
+        #     end
 
-            # Compute increment using conjugate gradients
-            @timeit "linear solve" Δu = K \ g #IterativeSolvers.cg!(Δu, K, g; maxiter=1000)
-
-            apply_zero!(Δu, model.boundaryconds)
-            u .-= Δu
-            fill!(Δu, 0.0)
-            model.dofs .= u
-            #println("Is TRUE ? = ", norm(u .- res.minimizer))
-        end
+        #     # Compute increment using conjugate gradients
+        #     @timeit "linear solve" Δu = K \ g #IterativeSolvers.cg!(Δu, K, g; maxiter=1000)
+        #     apply_zero!(Δu, model.boundaryconds)
+        #     u .-= Δu
+        #     fill!(Δu, 0.0)
+        #     model.dofs .= u
+        #     #println("Is TRUE ? = ", norm(u .- res.minimizer))
+        # end
         # Save the solution fields
         vtk_grid("small_strain_elasticity_2D_$counter.vtu", model.dofhandler) do vtkfile
-            vtk_point_data(vtkfile, model.dofhandler, model.dofs)
+            vtk_point_data(vtkfile, model.dofhandler, u)
             vtk_save(vtkfile)
             pvd[t] = vtkfile
         end
-    #end
+    end
 
     print_timer(title = "Analysis with $(getncells(model.dofhandler.grid)) elements", linechars = :ascii)
-    return u
+    return u, model.dofs
 end
 
-@time u_my = solve();
+@time u_my, dofs = solve();
+
 
 maximum(u_my)
+maximum(dofs)
 
-length(u_my)
+println(u_my)
+println(dofs)
+
+norm(u_my-dofs)
 # steps which can be done on this :
     # 1. Compute tangent matrix differentiating wrt global dofs - done
     # 2. Add scratch struct - done 
@@ -440,4 +423,3 @@ xc = rand(SymmetricTensor{2,3})
 
 
 @time fromvoigt(SymmetricTensor{2,3}, vv)
-⋅
