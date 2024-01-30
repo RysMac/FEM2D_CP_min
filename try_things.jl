@@ -17,38 +17,41 @@ struct HookeConst
     c11::Float64
     c12::Float64
     c44::Float64
-gab::Float64
+    gab::Float64
 end
 
-function CubicMatrix(c11, c12, c44)
-    return    [ c11 c12  0
-                c12 c11  0
-                0 0 2c44 ]
-end;
+function CubicMatrix(param::HookeConst)
+    c11 = param.c11
+    c12 = param.c12
+    c44 = param.c44
+    z = zero(Float64)
+    return    [ Vec{}(c11, c12, c12, z, z, z),
+                Vec{}(c12, c11, c12, z, z, z), 
+                Vec{}(c12, c12, c11, z, z, z),
+                Vec{}(z, z, z, 2c44, z, z),
+                Vec{}(z, z, z, z, 2c44, z),
+                Vec{}(z, z, z, z, z, 2c44) ]
+end
 
 # tutaj trzeba wszystko pozamieniać na Tensor lub Vector bo ϵ wchodzi jako SymmetricTensor więc musimy pracować na tych samych typach
-function ψe(ϵ::SymmetricTensor{2, 2, T}, p, mp::HookeConst) where T
+function ψe(ϵ, p, Dᵉ, Pv)
     # parameters
-    c11 = mp.c11
-    c12 = mp.c12
-    c44 = mp.c44
-    gab = mp.gab
-    Dᵉ  = CubicMatrix(c11, c12, c44)
+    gab = 0.1
     #
-    R1 = 1/sqrt(2)
-    R = [R1 -R1 0
-         0 0 -1
-         R1 R1 0]
-    m = R*[1., -1., 1.]/sqrt(3.)
-    s = R*[1., -1., -2.]/sqrt(6)
-    P = 0.5 * ((m * s')' + (m * s'))
-    P = tens2vect(P)
+    # R1 = 1/sqrt(2.)
+    # R = Tensor{2, 3, Float64}([R1 -R1 0.
+    #               0. 0. -1.
+    #               R1 R1 0.])
     # the energy is wrong 
-    return 0.5(ϵv' * Dᵉ) * ϵv - (Dᵉ * ϵv)' * P * p +((P' * Dᵉ) * P + gab)*p^2
+    # wszystkie moduly trzeba stad wywalic do struc parameters
+    ϵv  = vec([ϵ[1, 1], ϵ[2, 2], 0.0, sqrt(2)/2*(ϵ[1, 2] + ϵ[2, 1]), 0.0, 0.0])
+    Dᵉϵv = vec([Dᵉ[i] ⋅ ϵv for i in 1:6])
+    DᵉPv = vec([Dᵉ[i] ⋅ Pv for i in 1:6])
+    return 0.5 * ϵv ⋅ Dᵉϵv - Dᵉϵv ⋅ Pv * p + 0.5 * (Pv ⋅ DᵉPv + gab) * p^2
     #return 0.5(ϵv' * Dᵉ) * ϵv + 0.5 * gab * p^2
-end;
+end
 
-function element_potential(dofe::AbstractVector{T}, cvu, cvp, mp::HookeConst) where T
+function element_potential(dofe::AbstractVector{T}, cvu, cvp, Dᵉ, Pv) where T
     energy = zero(T)
     # muszą wchodzic dwa elementy cvu cvp dla u i pl
     nu = getnbasefunctions(cvu)
@@ -56,10 +59,11 @@ function element_potential(dofe::AbstractVector{T}, cvu, cvp, mp::HookeConst) wh
     ue = dofe[1:nu]
     pe = dofe[nu + 1:end] 
     for qp=1:getnquadpoints(cvu)
-        # tutaj trzeba rozdzielić ue i ple 
-        ∇u      = function_symmetric_gradient(cvu, qp, ue)
+        # tutaj trzeba rozdzielić ue i pe
+        # tutaj trzeba dać ue-uen oraz pe-pen żeby mieć energię przysrostową!!! 
+        ∇u      = function_gradient(cvu, qp, ue)
         p       = function_value(cvp, qp, pe)
-        energy  += ψe(∇u, p, mp) * getdetJdV(cvu, qp)
+        energy  += ψe(∇u, p, Dᵉ, Pv) * getdetJdV(cvu, qp)
     end
     return energy
 end;
@@ -78,13 +82,13 @@ struct ThreadCache{CVu, CVp, T, DIM, F <: Function, GC <: GradientConfig, HC <: 
     hessconf            ::HC
 end
 
-function ThreadCache(dpc::Int, nodespercell, cvPu::CellValues{DIM, T}, cvPp::CellValues{DIM, T}, modelparams, elpotential) where {DIM, T}
+function ThreadCache(dpc::Int, nodespercell, cvPu::CellValues{DIM, T}, cvPp::CellValues{DIM, T}, Dᵉ, Pv, elpotential) where {DIM, T}
     element_indices     = zeros(Int, dpc)
     element_dofs        = zeros(dpc)
     element_gradient    = zeros(dpc)
     element_hessian     = zeros(dpc, dpc)
     element_coords      = zeros(Vec{DIM, T}, nodespercell)
-    potfunc             = x -> elpotential(x, cvPu, cvPp, modelparams)
+    potfunc             = x -> elpotential(x, cvPu, cvPp, Dᵉ, Pv)
     gradconf            = GradientConfig(potfunc, zeros(dpc), Chunk{3}())
     hessconf            = HessianConfig(potfunc, zeros(dpc), Chunk{3}())
     return ThreadCache(cvPu, cvPp, element_indices, element_dofs, element_gradient, element_hessian, element_coords, potfunc, gradconf, hessconf)
@@ -185,7 +189,7 @@ end;
 
 function ElasticModel()
     # Generate a grid
-    N       = 4
+    N       = 5
     L       = 1.0
     left    = zero(Vec{2})
     right   = L * ones(Vec{2})
@@ -195,13 +199,13 @@ function ElasticModel()
     c11 = 170.
     c12 = 124.
     c44 = 75.
-    gab = 0.8
+    gab = 0.
     mp  = HookeConst(c11, c12, c44, gab)
-
+    Dᵉ  = CubicMatrix(mp)
     # Finite element base
     #linear    = Lagrange{2,RefTetrahedron,1}()
     #quadratic = Lagrange{2,RefTetrahedron,2}()
-    ipu = Lagrange{2, RefCube, 2}() # field interpolation fo u
+    ipu = Lagrange{2, RefCube, 1}() # field interpolation fo u
     ipp = Lagrange{2, RefCube, 1}() # field interpolation fo p
     gip = Lagrange{2, RefCube, 1}() # geometric interpolation
     qr  = QuadratureRule{2, RefCube}(3) # Gauss points
@@ -211,11 +215,44 @@ function ElasticModel()
     # DofHandler
     dh = DofHandler(grid)
     add!(dh, :u, 2, ipu) # add displacement field
-add!(dh, :p, 1, ipp) # add plastic field
+    add!(dh, :p, 1, ipp) # add plastic field
     close!(dh)
 
-ue_range = dof_range(dh, :u)
+    ue_range = dof_range(dh, :u)
     pe_range = dof_range(dh, :p)
+
+
+    # nodeids = grid.cells[1].nodes
+    #     #
+    # element_coords = zeros(Vec{2, Float64}, 4)
+    # for j=1:length(element_coords)
+    #     element_coords[j] = grid.nodes[nodeids[j]].x
+    # end
+    # reinit!(cvu, element_coords)    
+    # reinit!(cvp, element_coords)    
+    
+    # ue = zeros(8)
+    # pe = zeros(4)
+    # ∇u = function_symmetric_gradient(cvu, 1, ue)
+    # p  = function_value(cvp, 1, pe)
+
+
+    # @code_warntype ψe(∇u, p, Dᵉ, Pv)
+    
+    # using BenchmarkTools
+    R1 = 1/sqrt(2.)
+    R = Tensor{2, 3, Float64}([R1 -R1 0.
+                               0. 0. -1.
+                               R1 R1 0.])
+    m = R ⋅ Vec{3,Float64}([1., -1., 1.]/sqrt(3.))
+    s = R ⋅ Vec{3,Float64}([1., -1., -2.]/sqrt(6))
+    P = 0.5(m⊗s + s⊗m)
+    Pv =  vec([P[1, 1], P[2, 2], 0.0, P[1, 2], 0.0, 0.0])
+    
+    #@benchmark ψe(∇u, p, Dᵉ, Pv)
+
+
+
 
     _ndofs  = ndofs(dh)
     lc      = zeros(_ndofs)
@@ -235,7 +272,7 @@ ue_range = dof_range(dh, :u)
     # Make one cache 
     dpc     = ndofs_per_cell(dh)
     cpc     = length(grid.cells[1].nodes)
-    caches  = ThreadCache(dpc, cpc, copy(cvu), copy(cvp), mp, element_potential)
+    caches  = ThreadCache(dpc, cpc, copy(cvu), copy(cvp), Dᵉ, Pv, element_potential)
       
     threadindices = [i for i in 1:length(grid.cells)]
     return Model(zeros(ndofs(dh)), dh, dbcs, threadindices, caches, lc)
@@ -252,9 +289,10 @@ function solve()
     model   = ElasticModel()
     _ndofs  = length(model.dofs)
     u       = zeros(_ndofs)
-for i in 1:length(model.dofhandler.grid.cells)
-        u[celldofs(model.dofhandler, i)[9:end]] .= 0.1
+    for i in 1:length(model.dofhandler.grid.cells)
+        u[celldofs(model.dofhandler, i)[9:end]] .= 0.000001
     end
+    model.dofs .= u
     #u       = zeros(_ndofs)
     Δu      = zeros(_ndofs)
     # Create sparse matrix and residual vector
@@ -280,14 +318,19 @@ for i in 1:length(model.dofhandler.grid.cells)
     ux = [Inf for _ in 1:_ndofs]
     #ux = [Inf for _ in 1:length(lx)]
     odc = TwiceDifferentiableConstraints(lx, ux)
-    res(x) = optimize(od, odc, x, IPNewton(), Optim.Options(show_trace=false, show_every=1, g_tol=1e-16, iterations=50))
+    #res(x) = optimize(od, odc, x, Fminbox(GradientDescent()), Optim.Options(show_trace=false, show_every=1, g_tol=1e-16, iterations=50))
+    #res(x) = optimize(f, grad!, lx, ux, x, Fminbox(LBFGS()))
+    res(x) = optimize(od, odc, x, IPNewton( linesearch = Optim.backtrack_constrained_grad,
+                                                            μ0 = 10,
+                                                            show_linesearch = false),
+                                            Optim.Options(allow_f_increases = true, successive_f_tol = 5)
+                                                            )
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
     for t ∈ 0.0:Δt:Tf
                 #Perform Newton iterations
         #t = 0.1
         Ferrite.update!(model.boundaryconds, t)
-        apply!(u, model.boundaryconds)
-        model.dofs .= u
+        apply!(model.dofs, model.boundaryconds)
         newton_itr = -1
         prog = ProgressMeter.ProgressThresh(NEWTON_TOL, "Solving @ time $t of $Tf;")
         fill!(Δu, 0.0)
@@ -333,12 +376,11 @@ for i in 1:length(model.dofhandler.grid.cells)
     end
 
     print_timer(title = "Analysis with $(getncells(model.dofhandler.grid)) elements", linechars = :ascii)
-    return u
+    return model.dofs
 end
 
 u_my = solve();
 
-u_my
 # steps which can be done on this :
     # 1. Compute tangent matrix differentiating wrt global dofs - done
     # 2. Add scratch struct - done 
