@@ -6,11 +6,10 @@ using SparseArrays
 using Tensors
 using Base.Threads
 
-
-function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
+function Fg(∇P::SymmetricTensor{2, 2, T}, G) where T
     #ϵ   = extend_mx!(∇P) # this is quite dirty code
     #ϵv  = tens2vect(ϵ)
-    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
+    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*(∇P[1, 2]+∇P[2, 1])/2))
     return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
 end
 
@@ -65,7 +64,6 @@ function LandauModel(α, G, gridsize, left::Vec{DIM, T}, right::Vec{DIM, T}, elp
 
     dofvector = zeros(ndofs(dofhandler))
     #startingconditions!(dofvector, dofhandler)
-    #startingconditions!(dofvector, dofhandler)
     boundaryconds = ConstraintHandler(dofhandler)
     #boundary conditions can be added but aren't necessary for optimization
     dbc = Dirichlet(:P, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
@@ -77,7 +75,7 @@ function LandauModel(α, G, gridsize, left::Vec{DIM, T}, right::Vec{DIM, T}, elp
 
     apply!(dofvector, boundaryconds)
 
-    #hessian = create_sparsity_pattern(dofhandler)
+    hessian = create_sparsity_pattern(dofhandler)
     dpc = ndofs_per_cell(dofhandler)
     cpc = length(grid.cells[1].nodes)
     caches = [ThreadCache(dpc, cpc, copy(cvP), ModelParams(α, G), elpotential) for t=1:nthreads()]
@@ -185,7 +183,7 @@ function element_potential(eldofs::AbstractVector{T}, cvP, params) where T
     energy = zero(T)
     for qp=1:getnquadpoints(cvP)
         #P  = function_value(cvP, qp, eldofs)
-        ∇P = function_symmetric_gradient(cvP, qp, eldofs)
+        ∇P = function_gradient(cvP, qp, eldofs)
         energy += F(∇P, params) * getdetJdV(cvP, qp)
     end
     return energy
@@ -199,7 +197,6 @@ function startingconditions!(dofvector, dofhandler)
             dofvector[globaldofs[i]]   = -2.0
             dofvector[globaldofs[i+1]] = 2.0
             #dofvector[globaldofs[i+2]] = -2.0tanh(cell.coords[it][1]/20)
-            #dofvector[globaldofs[i+2]] = -2.0tanh(cell.coords[it][1]/20)
             it += 1
         end
     end
@@ -210,7 +207,7 @@ V2T(p11, p12, p44) = Tensor{4, 3}((i,j,k,l) -> p11 * δ(i,j)*δ(k,l)*δ(i,k) + p
 c11 = 170.
 c12 = 124.
 c44 = 75.
-G = Tensor{2,3}([ c11 c12 0.
+G = Tensor{2,3,Float64}([ c11 c12 0.
                 c12 c11 0.
                 0. 0. 2c44 ]);
 α = Vec{3}((-1.0, 1.0, 1.0))
@@ -223,3 +220,15 @@ vtk_save("landauorig", model)
 vtk_save("landaufinal", model)
 
 Threads.nthreads()
+
+A = rand(SymmetricTensor{2, 2})
+
+Fg(A, G)
+
+function Fg(∇P::SymmetricTensor{2, 2, T}, G::Tensor) where T
+    #ϵ   = extend_mx!(∇P) # this is quite dirty code
+    #ϵv  = tens2vect(ϵ)
+    ∇P_vec = Vec{3, T}((∇P[1, 1], ∇P[2, 2], sqrt(2)*∇P[1, 2]))
+    return 0.5(∇P_vec ⋅ G) ⋅ ∇P_vec
+    #return 0.5(∇P ⊡ ∇P)
+end

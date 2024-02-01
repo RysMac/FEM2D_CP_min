@@ -3,6 +3,7 @@
 .julia_packages/*
 Project.toml
 Manifest.toml
+gqtpar(1).jl
 
 # Git-related files and directories
 .git/*

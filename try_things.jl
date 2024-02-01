@@ -17,7 +17,7 @@ struct HookeConst
     c11::Float64
     c12::Float64
     c44::Float64
-end
+end;
 
 function CubicMatrix(param::HookeConst)
     c11 = param.c11
@@ -30,7 +30,7 @@ function CubicMatrix(param::HookeConst)
                 Vec{}(z, z, z, 2c44, z, z),
                 Vec{}(z, z, z, z, 2c44, z),
                 Vec{}(z, z, z, z, z, 2c44) ]
-end
+end;
 
 function CubicMatrix(c11::Float64, c12::Float64, c44::Float64)
     z = zero(Float64)
@@ -48,13 +48,13 @@ function ψe(ϵ, mp::HookeConst)
     #ϵv  = reinterpret(Vec{6, Float64}, vec([ϵ[1, 1], ϵ[2, 2], 0.0, sqrt(2)*ϵ[1, 2], 0.0, 0.0]))
     ϵv  = vec([ϵ[1, 1], ϵ[2, 2], 0.0, sqrt(2)/2*(ϵ[1, 2] + ϵ[2, 1]), 0.0, 0.0])
     return 0.5 * (ϵv ⋅ [Dᵉ[i] ⋅ ϵv for i in 1:6])
-end
+end;
 
 function ψe(ϵ, Dᵉ)
     #
     ϵv  = vec([ϵ[1, 1], ϵ[2, 2], 0.0, sqrt(2)/2*(ϵ[1, 2] + ϵ[2, 1]), 0.0, 0.0])
     return 0.5 * (ϵv ⋅ [Dᵉ[i] ⋅ ϵv for i in 1:6])
-end
+end;
 
 function element_potential(ue::AbstractVector{T}, cv, Dᵉ) where T
     energy = zero(T)
@@ -63,7 +63,7 @@ function element_potential(ue::AbstractVector{T}, cv, Dᵉ) where T
         energy  += ψe(∇u, Dᵉ) * getdetJdV(cv, qp)
     end
     return energy
-end
+end;
 
 # Create struct which poseses all element data e.g. ke, re, potential etc...
 struct ThreadCache{CV, T, DIM, F <: Function, GC <: GradientConfig, HC <: HessianConfig}
@@ -88,7 +88,7 @@ function ThreadCache(dpc::Int, nodespercell, cvP::CellValues{DIM, T}, modelparam
     gradconf            = GradientConfig(potfunc, zeros(dpc), Chunk{3}())
     hessconf            = HessianConfig(potfunc, zeros(dpc), Chunk{3}())
     return ThreadCache(cvP, element_indices, element_dofs, element_gradient, element_hessian, element_coords, potfunc, gradconf, hessconf)
-end
+end;
 
 
 mutable struct Model{T, DH <: DofHandler, CH <: ConstraintHandler, TC <: ThreadCache}
@@ -242,11 +242,13 @@ function ElasticModel()
     close!(dh)
 
     dbcs = ConstraintHandler(dh)
+    addvertexset!(grid, "cornerdown", (x) -> x[1] ≈ 0.0 && x[2] ≈ 0.0)
     # Add a homogeneous boundary condition on the "clamped" edge
-    dbc = Dirichlet(:u, getfaceset(grid, "right"), (x,t) -> [0.0, 0.0], [1, 2])
+    dbc = Dirichlet(:u, getfaceset(grid, "bottom"), (x,t) -> [0.0], [2])
     add!(dbcs, dbc)
-    dbc = Dirichlet(:u, getfaceset(grid, "left"), (x,t) -> t*[1], [1])
+    dbc = Dirichlet(:u, getfaceset(grid, "top"), (x,t) -> -t*[1.], [2])
     add!(dbcs, dbc)
+    add!(dbcs, Dirichlet(:u, getvertexset(grid, "cornerdown"), (x,t) -> [0], [1]))
     close!(dbcs)
 
     # Make one cache 
@@ -256,7 +258,7 @@ function ElasticModel()
       
     threadindices = [i for i in 1:length(grid.cells)]
     return Model(zeros(ndofs(dh)), dh, dbcs, threadindices, caches)
-end 
+end; 
 
 function solve()
     reset_timer!()
@@ -291,8 +293,8 @@ function solve()
     od = TwiceDifferentiable(f, grad!, hess!, model.dofs, 0.0, g, K)
     find_min(x) = optimize(od, x, Newton(linesearch=BackTracking()), Optim.Options(show_trace=true, show_every=1, g_tol=1e-10))
     pvd = paraview_collection("small_strain_elasticity_2D.pvd");
-    for t ∈ Δt:Δt:Tf
-    #    t = 0.2
+    #for t ∈ Δt:Δt:Tf
+        t = 0.1
         #Perform Newton iterations
         Ferrite.update!(model.boundaryconds, t)
         apply!(u, model.boundaryconds);
@@ -341,13 +343,14 @@ function solve()
             vtk_save(vtkfile)
             pvd[t] = vtkfile
         end
-    end
+    #end
 
     print_timer(title = "Analysis with $(getncells(model.dofhandler.grid)) elements", linechars = :ascii)
     return u, model.dofs
 end
 
 @time u_my, dofs = solve();
+
 
 
 maximum(u_my)
@@ -367,25 +370,26 @@ norm(u_my-dofs)
 
     
     
-    c11 = 170.
-    c12 = 124.
-    c44 = 75.
-    mx = [ c11 c12 c12 0. 0. 0.
-                c12 c11 c12 0. 0. 0.
-                c12 c12 c11 0. 0. 0.
-                0. 0. 0. 2c44 0. 0.
-                0. 0. 0. 0. 2c44 0.
-                0. 0. 0. 0. 0. 2c44 ]
+c11 = 170.
+c12 = 124.
+c44 = 75.
+mx = [ c11 c12 c12 0. 0. 0.
+            c12 c11 c12 0. 0. 0.
+            c12 c12 c11 0. 0. 0.
+            0. 0. 0. 2c44 0. 0.
+            0. 0. 0. 0. 2c44 0.
+            0. 0. 0. 0. 0. 2c44 ]
 
-                mxv = [ Vec{}(c11, c12, c12, 0., 0., 0.),
-                       Vec{}(c12, c11, c12, 0., 0., 0.),
-                       Vec{}(c12, c12, c11, 0., 0., 0.),
-                       Vec{}(0., 0., 0., 2c44, 0., 0.),
-                       Vec{}(0., 0., 0., 0., 2c44, 0.),
-                       Vec{}(0., 0., 0., 0., 0., 2c44) ]
+
+            mxv = [ Vec{}(c11, c12, c12, 0., 0., 0.),
+        Vec{}(c12, c11, c12, 0., 0., 0.),
+        Vec{}(c12, c12, c11, 0., 0., 0.),
+        Vec{}(0., 0., 0., 2c44, 0., 0.),
+        Vec{}(0., 0., 0., 0., 2c44, 0.),
+        Vec{}(0., 0., 0., 0., 0., 2c44) ]
 
 typeof(mxv)
-                       using Tensors
+using Tensors
 
 rand(Tensor{1, 6, Float64, 1:1:6})
 
@@ -423,3 +427,22 @@ xc = rand(SymmetricTensor{2,3})
 
 
 @time fromvoigt(SymmetricTensor{2,3}, vv)
+
+struct func_data
+    func_τ::Function
+end
+
+
+function data_func(param::Vector{T}) where T
+    f = τ(values) = param' * values    
+    return func_data(f)
+end
+
+d = data_func(param)
+
+d.func_τ(param)
+
+param = zeros(3)
+vals = ones(3)
+
+data(param, vals)
